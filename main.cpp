@@ -17,6 +17,11 @@ struct {
 	NIC_DRIVER Drivers[0xFF];
 } NICs = { 0 };
 
+static PDEVICE_OBJECT g_CachedDevice[16] = { NULL };
+static char           g_CachedSerial[16][12] = { { 0 } };
+static BOOLEAN        g_CachedInit[16] = { FALSE };
+static KSPIN_LOCK     g_MonitorCacheLock;
+
 /**** DISKS ****/
 NTSTATUS PartInfoIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 	if (context) {
@@ -81,7 +86,12 @@ NTSTATUS StorageQueryIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 			PSTORAGE_DEVICE_DESCRIPTOR desc = (PSTORAGE_DEVICE_DESCRIPTOR)request.Buffer;
 			ULONG offset = desc->SerialNumberOffset;
 			if (offset && offset < request.BufferLength) {
-				strcpy((PCHAR)desc + offset, SERIAL);
+				SIZE_T remaining = request.BufferLength - offset;
+				SIZE_T serialLen = strlen(SERIAL);
+				SIZE_T copyLen = min(serialLen, remaining - 1); // -1 for null terminator
+
+				RtlCopyMemory((PCHAR)desc + offset, SERIAL, copyLen);
+				*((PCHAR)desc + offset + copyLen) = '\0'; // explicit null terminate
 
 				printf("handled StorageQueryIoc\n");
 			}
@@ -186,9 +196,6 @@ void SpoofRaidUnits(RU_REGISTER_INTERFACES RaidUnitRegisterInterfaces, BYTE Raid
 										PSTRING serial = (PSTRING)((PBYTE)device->DeviceExtension + RaidUnitExtension_SerialNumber_offset);
 										strcpy(serial->Buffer, SERIAL);
 										serial->Length = (USHORT)strlen(SERIAL);
-										
-										//Disable Smart Bit
-										*(PINT)((PBYTE)device->DeviceExtension + 0x7c8) = 0;
 
 										if (NT_SUCCESS(status = RaidUnitRegisterInterfaces(device->DeviceExtension))) {
 											++success;
@@ -648,6 +655,7 @@ struct {
 } wpps = { 0 };
 
 VOID WppSet(PVOID returnAddress, WPP_FILTER filter, PDEVICE_OBJECT* wppGlobal, PVOID* wppTraceMessage) {
+	if (wpps.Length >= 0x100) return;  // ADD THIS
 	PWPP wpp = &wpps.Buffer[wpps.Length++];
 
 	wpp->ReturnAddress = returnAddress;
@@ -795,6 +803,11 @@ NTSTATUS NsiControl(PDEVICE_OBJECT device, PIRP irp) {
 		// After the real driver fills the buffer, we wipe it
 		if (NT_SUCCESS(status) && irp->UserBuffer) {
 			__try {
+				ProbeForWrite(
+					irp->UserBuffer,
+					ioc->Parameters.DeviceIoControl.OutputBufferLength,
+					sizeof(UCHAR)
+				);
 				// Wiping the ARP table prevents Ricochet from seeing 
 				// inconsistencies between your MAC and the network
 				RtlZeroMemory(irp->UserBuffer, ioc->Parameters.DeviceIoControl.OutputBufferLength);
@@ -997,35 +1010,6 @@ NTSTATUS SpoofARP() {
 	return STATUS_SUCCESS;
 }
 
-//SMBIOS
-void TryWMISMBiosSpoof() {
-	PVOID wmiBase = GetBaseAddress("wmilib.sys", 0);
-	if (!wmiBase) {
-		wmiBase = GetBaseAddress("wmimap.sys", 0);
-	}
-
-	if (wmiBase) {
-		// Look for WMI SMBIOS patterns
-		BYTE wmiPatterns[][15] = {
-		{0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x00, 0x48, 0x8B, 0x48},
-		{0x48, 0x8B, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC9, 0x74, 0x00, 0x48, 0x8B, 0x41}
-		};
-
-		// Fix the mask length - it should match the pattern length
-		for (int i = 0; i < 2; i++) {
-			PBYTE wmiAddr = FindPatternImage(wmiBase, (PCHAR)wmiPatterns[i], "xxx????xxxx?xx");
-			if (wmiAddr) {
-				wmiAddr = (PBYTE)((PBYTE)wmiAddr + 7 + *(PINT)((PBYTE)wmiAddr + 3));
-				memset(wmiAddr, 0, 8); // Clear 8 bytes
-				printf("nulled WMI SMBIOS address (fallback)\n");
-				return;
-			}
-		}
-	}
-
-	printf("! All SMBIOS spoofing methods failed!\n");
-}
-
 void SpoofSMBIOS() {
 	PVOID base = GetBaseAddress("ntoskrnl.exe", 0);
 	if (!base) {
@@ -1076,9 +1060,6 @@ void SpoofSMBIOS() {
 	}
 	else {
 		printf("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
-
-		// Fallback: Try to find via WMI subsystem
-		TryWMISMBiosSpoof();
 	}
 
 	PBYTE ExpBootEnvironmentInformation = NULL;
@@ -1113,7 +1094,7 @@ void SpoofSMBIOS() {
 		printf("handled ExpBootEnvironmentInformation\n");
 	}
 	else {
-		printf("! ExpBootEnvironmentInformation not found!\n");
+		printf("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
 	}
 }
 
@@ -1235,12 +1216,6 @@ void PurgeGraphicsCache(PUNICODE_STRING keyPath) {
 }
 
 NTSTATUS SpoofMonitorReg() {
-	// 1. Purge the Graphics Drivers cache profiles targeted by iw8
-	UNICODE_STRING configPath = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\Configuration");
-	UNICODE_STRING connectPath = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\Connectivity");
-	PurgeGraphicsCache(&configPath);
-	PurgeGraphicsCache(&connectPath);
-
 	// 2. Open standard hardware DISPLAY key
 	UNICODE_STRING masterKeyPath = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Enum\\DISPLAY");
 	OBJECT_ATTRIBUTES objAttr;
@@ -1594,13 +1569,11 @@ NTSTATUS HandleMonitor(PDEVICE_OBJECT device, PIRP Irp)
 
 			if (!MmIsAddressValid(mon)) continue;
 
-			static PDEVICE_OBJECT g_CachedDevice[16] = { NULL };
-			static char           g_CachedSerial[16][12] = { { 0 } };
-			static BOOLEAN        g_CachedInit[16] = { FALSE };
+			KIRQL oldIrql;
+			KeAcquireSpinLock(&g_MonitorCacheLock, &oldIrql);
 
 			ULONG cacheIdx = 0xFF;
-			for (ULONG k = 0; k < 16; k++)
-			{
+			for (ULONG k = 0; k < 16; k++) {
 				if (g_CachedInit[k] && g_CachedDevice[k] == device) { cacheIdx = k; break; }
 				if (!g_CachedInit[k] && cacheIdx == 0xFF) cacheIdx = k;
 			}
@@ -1649,6 +1622,7 @@ NTSTATUS HandleMonitor(PDEVICE_OBJECT device, PIRP Irp)
 
 void SpoofMonitor(void)
 {
+	KeInitializeSpinLock(&g_MonitorCacheLock);
 	InitMonitorStrings();
 	PatchRegistryEdid();
 
