@@ -195,8 +195,6 @@ void SpoofRaidUnits(RU_REGISTER_INTERFACES RaidUnitRegisterInterfaces, BYTE Raid
 											serial->Length = (USHORT)strlen(SERIAL);
 										}
 										
-										serial->Length = (USHORT)strlen(SERIAL);
-
 										if (NT_SUCCESS(status = RaidUnitRegisterInterfaces(device->DeviceExtension))) {
 											++success;
 										}
