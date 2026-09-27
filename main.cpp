@@ -12,6 +12,7 @@ PDRIVER_DISPATCH DiskControlOriginal = 0, MountControlOriginal = 0, PartControlO
 PDRIVER_DISPATCH OriginalQueryVolumeInformation = NULL; //NTFS
 PDRIVER_DISPATCH g_OriginalMonitorDispatch = NULL;
 ULONG GlobalVolumeSerialNumber = 0;
+
 struct {
 	DWORD Length;
 	NIC_DRIVER Drivers[0xFF];
@@ -20,7 +21,6 @@ struct {
 static PDEVICE_OBJECT g_CachedDevice[16] = { NULL };
 static char           g_CachedSerial[16][12] = { { 0 } };
 static BOOLEAN        g_CachedInit[16] = { FALSE };
-static KSPIN_LOCK     g_MonitorCacheLock;
 
 /**** DISKS ****/
 NTSTATUS PartInfoIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
@@ -93,7 +93,7 @@ NTSTATUS StorageQueryIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 				RtlCopyMemory((PCHAR)desc + offset, SERIAL, copyLen);
 				*((PCHAR)desc + offset + copyLen) = '\0'; // explicit null terminate
 
-				printf("handled StorageQueryIoc\n");
+				DbgPrint("handled StorageQueryIoc\n");
 			}
 		}
 
@@ -117,7 +117,7 @@ NTSTATUS AtaPassIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 				PCHAR serial = (PCHAR)((PIDENTIFY_DEVICE_DATA)((PBYTE)request.Buffer + offset))->SerialNumber;
 				SwapEndianess(serial, SERIAL);
 
-				printf("handled AtaPassIoc\n");
+				DbgPrint("handled AtaPassIoc\n");
 			}
 		}
 
@@ -138,7 +138,7 @@ NTSTATUS SmartDataIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 			PCHAR serial = ((PIDSECTOR)((PSENDCMDOUTPARAMS)request.Buffer)->bBuffer)->sSerialNumber;
 			SwapEndianess(serial, SERIAL);
 
-			printf("handled SmartDataIoc\n");
+			DbgPrint("handled SmartDataIoc\n");
 		}
 
 		if (request.OldRoutine && irp->StackCount > 1) {
@@ -201,14 +201,14 @@ void SpoofRaidUnits(RU_REGISTER_INTERFACES RaidUnitRegisterInterfaces, BYTE Raid
 											++success;
 										}
 										else {
-											printf("! RaidUnitRegisterInterfaces failed: %p !\n", status);
+											DbgPrint("! RaidUnitRegisterInterfaces failed: %p !\n", status);
 										}
 
 										++total;
 									}
 								}
 
-								printf("%wZ: RaidUnitRegisterInterfaces succeeded for %d/%d\n", raidport_str, success, total);
+								DbgPrint("%wZ: RaidUnitRegisterInterfaces succeeded for %d/%d\n", raidport_str, success, total);
 							}
 						}
 
@@ -216,23 +216,23 @@ void SpoofRaidUnits(RU_REGISTER_INTERFACES RaidUnitRegisterInterfaces, BYTE Raid
 					}
 				}
 				else {
-					printf("! failed to get storahci devices (got %d): %p !\n", length, status);
+					DbgPrint("! failed to get storahci devices (got %d): %p !\n", length, status);
 				}
 
 				ExFreePool(devices);
 			}
 			else {
-				printf("! failed to allocated %d storahci devices !\n", length);
+				DbgPrint("! failed to allocated %d storahci devices !\n", length);
 			}
 		}
 		else {
-			printf("! failed to get storahci device list size (got %d): %p !\n", length, status);
+			DbgPrint("! failed to get storahci device list size (got %d): %p !\n", length, status);
 		}
 
 		ObDereferenceObject(storahci_object);
 	}
 	else {
-		printf("! failed to get %wZ: %p !\n", &storahci_object, status);
+		DbgPrint("! failed to get %wZ: %p !\n", &storahci_object, status);
 	}
 }
 
@@ -244,7 +244,7 @@ void SpoofDisks() {
 
 	NTSTATUS status = ObReferenceObjectByName(&disk_str, OBJ_CASE_INSENSITIVE, 0, 0, *IoDriverObjectType, KernelMode, 0, &disk_object);
 	if (!NT_SUCCESS(status)) {
-		printf("! failed to get %wZ: %p !\n", &disk_str, status);
+		DbgPrint("! failed to get %wZ: %p !\n", &disk_str, status);
 		return;
 	}
 
@@ -276,7 +276,7 @@ void SpoofDisks() {
 								}
 							}
 							else {
-								printf("! failed to build IoControlRequest !\n");
+								DbgPrint("! failed to build IoControlRequest !\n");
 							}
 
 							ObDereferenceObject(disk);
@@ -291,7 +291,7 @@ void SpoofDisks() {
 								++success;
 							}
 							else {
-								printf("! DiskEnableDisableFailurePrediction failed: %p !\n", status);
+								DbgPrint("! DiskEnableDisableFailurePrediction failed: %p !\n", status);
 							}
 
 							++total;
@@ -300,24 +300,24 @@ void SpoofDisks() {
 						ObDereferenceObject(device);
 					}
 
-					printf("disabling smart succeeded for %d/%d\n", success, total);
+					DbgPrint("disabling smart succeeded for %d/%d\n", success, total);
 				}
 				else {
-					printf("! failed to get disk devices (got %d): %p !\n", length, status);
+					DbgPrint("! failed to get disk devices (got %d): %p !\n", length, status);
 				}
 
 				ExFreePool(devices);
 			}
 			else {
-				printf("! failed to allocated %d disk devices !\n", length);
+				DbgPrint("! failed to allocated %d disk devices !\n", length);
 			}
 		}
 		else {
-			printf("! failed to get disk device list size (got %d): %p !\n", length, status);
+			DbgPrint("! failed to get disk device list size (got %d): %p !\n", length, status);
 		}
 	}
 	else {
-		printf("! failed to find DiskEnableDisableFailurePrediction !\n");
+		DbgPrint("! failed to find DiskEnableDisableFailurePrediction !\n");
 	}
 
 	ObDereferenceObject(disk_object);
@@ -337,19 +337,19 @@ void SpoofDisks() {
 					SpoofRaidUnits(RaidUnitRegisterInterfaces, RaidUnitExtension_SerialNumber_offset);
 				}
 				else {
-					printf("! failed to find RaidUnitExtension_SerialNumber (1) !\n");
+					DbgPrint("! failed to find RaidUnitExtension_SerialNumber (1) !\n");
 				}
 			}
 			else {
-				printf("! failed to find RaidUnitExtension_SerialNumber (0) !\n");
+				DbgPrint("! failed to find RaidUnitExtension_SerialNumber (0) !\n");
 			}
 		}
 		else {
-			printf("! failed to find RaidUnitRegisterInterfaces !\n");
+			DbgPrint("! failed to find RaidUnitRegisterInterfaces !\n");
 		}
 	}
 	else {
-		printf("! failed to get \"storport.sys\" !\n");
+		DbgPrint("! failed to get \"storport.sys\" !\n");
 	}
 }
 
@@ -501,13 +501,13 @@ NTSTATUS SetDiskWpp() {
 
 	NTSTATUS status = ObReferenceObjectByName(&diskStr, OBJ_CASE_INSENSITIVE, 0, 0, *IoDriverObjectType, KernelMode, 0, &diskObject);
 	if (!NT_SUCCESS(status)) {
-		printf("! failed to get %wZ driver object: %x !\n", &diskStr, status);
+		DbgPrint("! failed to get %wZ driver object: %x !\n", &diskStr, status);
 		return status;
 	}
 
 	PVOID wppGlobal = FindPatternImage(diskObject->DriverStart, "\x48\x89\x3D", "xxx"); //WPP_GLOBAL_CONTROL
 	if (!wppGlobal) {
-		printf("! failed to find %wZ WppGlobal !\n", &diskStr);
+		DbgPrint("! failed to find %wZ WppGlobal !\n", &diskStr);
 
 		ObDereferenceObject(diskObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -515,7 +515,7 @@ NTSTATUS SetDiskWpp() {
 
 	PVOID wppTraceMessage = FindPatternImage(diskObject->DriverStart, "\x48\x8B\x05\x00\x00\x00\x00\x48\x83", "xxx????xx"); //WPP_MAIN_CB.Dpc.DeferredRoutine
 	if (!wppTraceMessage) {
-		printf("! failed to find %wZ WppTraceMessage !\n", &diskStr);
+		DbgPrint("! failed to find %wZ WppTraceMessage !\n", &diskStr);
 
 		ObDereferenceObject(diskObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -523,7 +523,7 @@ NTSTATUS SetDiskWpp() {
 
 	PVOID returnAddress = FindPatternImage(diskObject->DriverStart, "\x90\xE9\x00\x00\x00\x00\x48\x8D\x54", "xx????xxx"); //nop
 	if (!returnAddress) {
-		printf("! failed to find %wZ return address !\n", &diskStr);
+		DbgPrint("! failed to find %wZ return address !\n", &diskStr);
 
 		ObDereferenceObject(diskObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -531,7 +531,7 @@ NTSTATUS SetDiskWpp() {
 
 	WppSet(returnAddress, DiskFilter, RELATIVE_ADDR(wppGlobal, 7), RELATIVE_ADDR(wppTraceMessage, 7));
 
-	printf("success for %wZ\n", &diskStr);
+	DbgPrint("success for %wZ\n", &diskStr);
 	ObDereferenceObject(diskObject);
 	return STATUS_SUCCESS;
 }
@@ -608,13 +608,13 @@ NTSTATUS SetMountWpp() {
 
 	NTSTATUS status = ObReferenceObjectByName(&mountStr, OBJ_CASE_INSENSITIVE, 0, 0, *IoDriverObjectType, KernelMode, 0, &mountObject);
 	if (!NT_SUCCESS(status)) {
-		printf("! failed to get %wZ driver object: %x !\n", &mountStr, status);
+		DbgPrint("! failed to get %wZ driver object: %x !\n", &mountStr, status);
 		return status;
 	}
 
 	PVOID wppGlobal = FindPatternImage(mountObject->DriverStart, "\x48\x89\x3D", "xxx");
 	if (!wppGlobal) {
-		printf("! failed to find %wZ WppGlobal !\n", &mountStr);
+		DbgPrint("! failed to find %wZ WppGlobal !\n", &mountStr);
 
 		ObDereferenceObject(mountObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -622,7 +622,7 @@ NTSTATUS SetMountWpp() {
 
 	PVOID wppTraceMessage = FindPatternImage(mountObject->DriverStart, "\x48\x8B\x05\x00\x00\x00\x00\x4C\x8D\x05", "xxx????xxx");
 	if (!wppTraceMessage) {
-		printf("! failed to find %wZ WppTraceMessage !\n", &mountStr);
+		DbgPrint("! failed to find %wZ WppTraceMessage !\n", &mountStr);
 
 		ObDereferenceObject(mountObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -630,7 +630,7 @@ NTSTATUS SetMountWpp() {
 
 	PVOID returnAddress = FindPatternImage(mountObject->DriverStart, "\x45\x8B\xCE\xE8\x00\x00\x00\x00\x90\xE9", "xxxx????xx");
 	if (!returnAddress) {
-		printf("! failed to find %wZ return address !\n", &mountStr);
+		DbgPrint("! failed to find %wZ return address !\n", &mountStr);
 
 		ObDereferenceObject(mountObject);
 		return STATUS_FAILED_DRIVER_ENTRY;
@@ -639,7 +639,7 @@ NTSTATUS SetMountWpp() {
 
 	WppSet((PBYTE)returnAddress + 8, MountFilter, RELATIVE_ADDR(wppGlobal, 7), RELATIVE_ADDR(wppTraceMessage, 7));
 
-	printf("success for %wZ\n", &mountStr);
+	DbgPrint("success for %wZ\n", &mountStr);
 	ObDereferenceObject(mountObject);
 	return STATUS_SUCCESS;
 }
@@ -754,7 +754,7 @@ NTSTATUS NICIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 		if (irp->MdlAddress) {
 			SpoofBuffer(SEED, (PBYTE)MmGetSystemAddressForMdl(irp->MdlAddress), 6);
 
-			printf("handled NICIoc\n");
+			DbgPrint("handled NICIoc\n");
 		}
 
 		if (request.OldRoutine && irp->StackCount > 1) {
@@ -889,6 +889,94 @@ void SpoofNIC() {
 	}
 }
 
+/*
+void SpoofNIC() {
+	// 1. NSI proxy hook — covers ARP regardless of adapter type
+	SwapControl(RTL_CONSTANT_STRING(L"\\Driver\\nsiproxy"), NsiControl, NsiControlOriginal);
+
+	// 2. Hook all known NIC drivers dynamically
+	const wchar_t* nicDrivers[] = {
+		L"\\Driver\\rt640x64",      // Realtek PCIe
+		L"\\Driver\\e1d68x64",      // Intel PCIe
+		L"\\Driver\\e1i68x64",      // Intel I219-V
+		L"\\Driver\\netrtwlanu",    // TP-Link Nano USB / Realtek USB wireless
+		L"\\Driver\\rtwlanu",       // Realtek USB wireless alternate
+		L"\\Driver\\nwifi",         // Windows native WiFi wrapper
+		L"\\Driver\\netr28ux",      // Ralink/MediaTek USB
+		L"\\Driver\\mt7921u",       // MediaTek AX
+		L"\\Driver\\bcmwl664",      // Broadcom
+		L"\\Driver\\netwtw"         // Intel WiFi
+	};
+
+	for (int i = 0; i < ARRAYSIZE(nicDrivers); i++) {
+		if (NICs.Length >= MAX_NIC_DRIVERS) break;
+
+		UNICODE_STRING driverName;
+		RtlInitUnicodeString(&driverName, nicDrivers[i]);
+
+		PDRIVER_OBJECT drvObj = NULL;
+		NTSTATUS status = ObReferenceObjectByName(
+			&driverName, OBJ_CASE_INSENSITIVE, NULL, 0,
+			*IoDriverObjectType, KernelMode, NULL, (PVOID*)&drvObj
+		);
+
+		if (NT_SUCCESS(status) && drvObj) {
+			NICs.Drivers[NICs.Length].DriverObject = drvObj;
+			AppendSwap(driverName,
+				&drvObj->MajorFunction[IRP_MJ_DEVICE_CONTROL],
+				NICControl,
+				NICs.Drivers[NICs.Length].Original
+			);
+			NICs.Length++;
+			DbgPrint("[hwid] Hooked NIC: %ws\n", nicDrivers[i]);
+			ObDereferenceObject(drvObj);
+		}
+		// Driver not present — skip silently, don't increment NICs.Length
+	}
+
+	// 3. NDIS version offsets
+	if (!InitializeNdisOffsets()) {
+		DbgPrint("[hwid] Unsupported Windows version for NDIS walk\n");
+		return;
+	}
+
+	// 4. NDIS structural walk — randomize permanent MAC in ndis.sys
+	PVOID ndisBase = GetBaseAddress("ndis.sys", 0);
+	if (ndisBase) {
+		PBYTE pList = FindPatternImage(ndisBase,
+			"\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x48\x8B\x40",
+			"xxx????xxxx?xxx");
+
+		if (pList) {
+			__try {
+				PNDIS_FILTER_BLOCK filter = *(PNDIS_FILTER_BLOCK*)(pList + 7 + *(PINT)(pList + 3));
+				DWORD count = 0;
+
+				while (filter) {
+					PVOID miniport = *(PVOID*)((PBYTE)filter + g_NdisOffsets.FilterToMiniport);
+
+					if (miniport && MmIsAddressValid(miniport)) {
+						PNDIS_IF_BLOCK block = *(PNDIS_IF_BLOCK*)((PBYTE)miniport + g_NdisOffsets.MiniportToIfBlock);
+
+						if (block && MmIsAddressValid(block)) {
+							for (ULONG j = 0; j < 6; j++)
+								block->ifPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
+							for (ULONG j = 0; j < 6; j++)
+								block->PermanentPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
+							count++;
+						}
+					}
+					filter = filter->NextFilter;
+				}
+				DbgPrint("[hwid] Permanent MAC spoofed for %d interfaces\n", count);
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+				DbgPrint("[hwid] Failed to walk NDIS filter list\n");
+			}
+		}
+	}
+}
+*/
 //ARP
 NTSTATUS InitializeTcpipOffsets() {
 	RTL_OSVERSIONINFOW osInfo = { 0 };
@@ -1013,7 +1101,7 @@ NTSTATUS SpoofARP() {
 void SpoofSMBIOS() {
 	PVOID base = GetBaseAddress("ntoskrnl.exe", 0);
 	if (!base) {
-		printf("! failed to get \"ntoskrnl.exe\" !\n");
+		DbgPrint("! failed to get \"ntoskrnl.exe\" !\n");
 		return;
 	}
 
@@ -1044,7 +1132,6 @@ void SpoofSMBIOS() {
 	for (int i = 0; i < 5; i++) {
 		WmipSMBiosTablePhysicalAddress = FindPatternImage(base, (PCHAR)patterns[i], masks[i]);
 		if (WmipSMBiosTablePhysicalAddress) {
-			printf("Found SMBIOS pattern %d\n", i);
 			break;
 		}
 	}
@@ -1056,10 +1143,10 @@ void SpoofSMBIOS() {
 		// Clear the SMBIOS physical address
 		memset(WmipSMBiosTablePhysicalAddress, 0, sizeof(PHYSICAL_ADDRESS));
 
-		printf("nulled SMBIOS table physical address\n");
+		DbgPrint("nulled SMBIOS table physical address\n");
 	}
 	else {
-		printf("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
+		DbgPrint("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
 	}
 
 	PBYTE ExpBootEnvironmentInformation = NULL;
@@ -1083,7 +1170,7 @@ void SpoofSMBIOS() {
 	for (int i = 0; i < 3; i++) {
 		ExpBootEnvironmentInformation = FindPatternImage(base, (PCHAR)bootPatterns[i], bootMasks[i]);
 		if (ExpBootEnvironmentInformation) {
-			printf("Found boot pattern %d\n", i);
+			DbgPrint("Found boot pattern %d\n", i);
 			break;
 		}
 	}
@@ -1091,10 +1178,10 @@ void SpoofSMBIOS() {
 	if (ExpBootEnvironmentInformation) {
 		ExpBootEnvironmentInformation = ExpBootEnvironmentInformation + 7 + *(PINT)(ExpBootEnvironmentInformation + 3);
 		SpoofBuffer(SEED, ExpBootEnvironmentInformation, 16);
-		printf("handled ExpBootEnvironmentInformation\n");
+		DbgPrint("handled ExpBootEnvironmentInformation\n");
 	}
 	else {
-		printf("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
+		DbgPrint("! WmipSMBiosTablePhysicalAddress not found with any pattern!\n");
 	}
 }
 
@@ -1341,8 +1428,10 @@ static void InitMonitorStrings(void)
 	};
 	static const char digits[] = { '0','1','2','3','4','5','6','7','8','9', 0 };
 
-	// Placeholder seed generation logic
-	ULONG seed = 0x12345678 ^ 0xDEADBEEF;
+	// Use boot time + tick count so it differs every run
+	LARGE_INTEGER tickCount;
+	KeQueryTickCount(&tickCount);
+	ULONG seed = (ULONG)tickCount.LowPart ^ (ULONG)__rdtsc();
 
 	ULONG vi = (MonLCG(&seed) >> 16) % (sizeof(vendors) / sizeof(vendors[0]));
 	ULONG mi = (MonLCG(&seed) >> 16) % (sizeof(models) / sizeof(models[0]));
@@ -1533,119 +1622,10 @@ static void PatchRegistryEdid(void)
 	ZwClose(hDisplay);
 }
 
-NTSTATUS HandleMonitor(PDEVICE_OBJECT device, PIRP Irp)
-{
-	PIO_STACK_LOCATION ioc = IoGetCurrentIrpStackLocation(Irp);
-
-	if (ioc->MinorFunction != IRP_MN_QUERY_ALL_DATA)
-		return g_OriginalMonitorDispatch(device, Irp);
-
-	PVOID wmiBuffer = ioc->Parameters.WMI.Buffer;
-	ULONG wmiSize = ioc->Parameters.WMI.BufferSize;
-
-	NTSTATUS status = g_OriginalMonitorDispatch(device, Irp);
-
-	if (NT_SUCCESS(status) && wmiBuffer && wmiSize >= sizeof(WNODE_ALL_DATA))
-	{
-		PWNODE_ALL_DATA allData = (PWNODE_ALL_DATA)wmiBuffer;
-		if (!MmIsAddressValid(allData) || !allData->InstanceCount)
-			return status;
-
-		BOOLEAN fixed = (allData->WnodeHeader.Flags & WNODE_FLAG_FIXED_INSTANCE_SIZE) != 0;
-		PUCHAR  base = (PUCHAR)allData + allData->DataBlockOffset;
-
-		for (ULONG i = 0; i < allData->InstanceCount; i++)
-		{
-			PWmiMonitorID mon = NULL;
-
-			if (fixed)
-				mon = (PWmiMonitorID)(base + i * allData->FixedInstanceSize);
-			else
-			{
-				OFFSETINSTANCEDATAANDLENGTH* inst = &allData->OffsetInstanceDataAndLength[i];
-				if (!inst->OffsetInstanceData) continue;
-				mon = (PWmiMonitorID)((PUCHAR)allData + inst->OffsetInstanceData);
-			}
-
-			if (!MmIsAddressValid(mon)) continue;
-
-			KIRQL oldIrql;
-			KeAcquireSpinLock(&g_MonitorCacheLock, &oldIrql);
-
-			ULONG cacheIdx = 0xFF;
-			for (ULONG k = 0; k < 16; k++) {
-				if (g_CachedInit[k] && g_CachedDevice[k] == device) { cacheIdx = k; break; }
-				if (!g_CachedInit[k] && cacheIdx == 0xFF) cacheIdx = k;
-			}
-			if (cacheIdx == 0xFF) cacheIdx = 0;
-
-			if (!g_CachedInit[cacheIdx])
-			{
-				const char alphanum[] = {
-					'A','B','C','D','E','F','G','H','I','J','K','L','M',
-					'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-					'0','1','2','3','4','5','6','7','8','9', 0
-				};
-				const char digits[] = { '0','1','2','3','4','5','6','7','8','9', 0 };
-
-				ULONG seed = 0x12345678 ^ ((ULONG)(ULONG_PTR)device * 0x9E3779B9);
-				char* s = g_CachedSerial[cacheIdx];
-				for (int c = 0; c < 3; c++) { seed = xorshift32(seed); s[c] = alphanum[(seed >> 16) % 26]; }
-				for (int c = 3; c < 5; c++) { seed = xorshift32(seed); s[c] = digits[(seed >> 16) % 10]; }
-				for (int c = 5; c < 8; c++) { seed = xorshift32(seed); s[c] = alphanum[(seed >> 16) % 36]; }
-				for (int c = 8; c < 10; c++) { seed = xorshift32(seed); s[c] = digits[(seed >> 16) % 10]; }
-				s[10] = 0;
-
-				g_CachedDevice[cacheIdx] = device;
-				g_CachedInit[cacheIdx] = TRUE;
-			}
-
-			const char* spoofSerial = g_CachedSerial[cacheIdx];
-
-			AnsiToWmiString(spoofSerial, mon->SerialNumberID, 16);
-			AnsiToWmiString(g_SpoofedVendor, mon->ManufacturerName, 16);
-			AnsiToWmiString(g_SpoofedName, mon->ProductCodeID, 16);
-
-			if (mon->UserFriendlyNameLength > 0)
-			{
-				ULONG nameLen = min((ULONG)strlen(g_SpoofedName), 13UL);
-				AnsiToWmiString(g_SpoofedName, mon->UserFriendlyName, nameLen);
-				mon->UserFriendlyNameLength = (USHORT)nameLen;
-			}
-
-			logging_output(encrypt("monitor %lu: after  -> serial=%s name=%s"), i, spoofSerial, g_SpoofedName);
-		}
-	}
-
-	return status;
-}
-
 void SpoofMonitor(void)
 {
-	KeInitializeSpinLock(&g_MonitorCacheLock);
 	InitMonitorStrings();
 	PatchRegistryEdid();
-
-	UNICODE_STRING name;
-	RtlInitUnicodeString(&name, encrypt(L"\\Driver\\monitor"));
-
-	PDRIVER_OBJECT drv = NULL;
-	NTSTATUS status = ObReferenceObjectByName(&name, OBJ_CASE_INSENSITIVE, NULL, 0,
-		*IoDriverObjectType, KernelMode, NULL, (void**)&drv);
-
-	if (!NT_SUCCESS(status) || !drv)
-	{
-		logging_output(encrypt("monitor: driver not found (0x%X)"), status);
-		return;
-	}
-
-	g_OriginalMonitorDispatch = drv->MajorFunction[IRP_MJ_SYSTEM_CONTROL];
-	drv->MajorFunction[IRP_MJ_SYSTEM_CONTROL] = HandleMonitor;
-
-	logging_output(encrypt("monitor: hooked (orig: %p -> new: %p)"),
-		g_OriginalMonitorDispatch, HandleMonitor);
-
-	ObDereferenceObject(drv);
 }
 
 //Installation ID
