@@ -792,73 +792,48 @@ NTSTATUS NsiControl(PDEVICE_OBJECT device, PIRP irp) {
 }
 
 void SpoofNIC() {
-	// 1. Handle the NsiProxy hook (Standard Current MAC / ARP)
-	SwapControl(RTL_CONSTANT_STRING(L"\\Driver\\nsiproxy"), NsiControl, NsiControlOriginal);
+    // 1. NSI proxy hook — covers ARP regardless of adapter type
+    SwapControl(RTL_CONSTANT_STRING(L"\\Driver\\nsiproxy"), NsiControl, NsiControlOriginal);
 
-	// 2. Populate and Hook the physical NIC drivers for NICControl
-	// In a real scenario, you'd want to detect these or loop through common names
-	UNICODE_STRING realtekDriver;
-	
-	RtlInitUnicodeString(&realtekDriver, L"\\Driver\\rt640x64"); // Common Realtek
-	// 1. Declare the string structure at the top of your function (or block)
-	UNICODE_STRING intelDriver;
+    // 2. NDIS version offsets
+    if (!InitializeNdisOffsets()) {
+        DbgPrint("[hwid] Unsupported Windows version for NDIS walk\n");
+        return;
+    }
 
-	// 2. Initialize it anywhere down inside your code execution path
-	RtlInitUnicodeString(&intelDriver, L"\\Driver\\e1d68x64");
+    // 3. NDIS structural walk — randomize permanent MAC in ndis.sys
+    PVOID ndisBase = GetBaseAddress("ndis.sys", 0);
+    if (ndisBase) {
+        PBYTE pList = FindPatternImage(ndisBase,
+            "\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x48\x8B\x40",
+            "xxx????xxxx?xxx");
 
-	// Example of hooking them using your framework:
-	if (NICs.Length < MAX_NIC_DRIVERS) {
-		// Hook Realtek if present
-		PVOID* pOriginalStorage = (PVOID*)&(NICs.Drivers[NICs.Length].Original);
-		SwapControl(realtekDriver, NICControl, pOriginalStorage);
-		// (Make sure to save the DriverObject pointer to NICs.Drivers[NICs.Length].DriverObject here)
-		NICs.Length++;
-	}
+        if (pList) {
+            __try {
+                PNDIS_FILTER_BLOCK filter = *(PNDIS_FILTER_BLOCK*)(pList + 7 + *(PINT)(pList + 3));
+                DWORD count = 0;
 
-	// 3. Initialize the correct offsets based on the running Windows version
-	if (!InitializeNdisOffsets()) {
-		DbgPrint("[hwid] Unsupported Windows version for NDIS structure walk.\n");
-		return;
-	}
-
-	// 4. Nullify the Permanent Hardware MAC in ndis.sys (The structural walk)
-	PVOID ndisBase = GetBaseAddress("ndis.sys", 0);
-	if (ndisBase) {
-		PBYTE pList = FindPatternImage(ndisBase, "\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x48\x8B\x40", "xxx????xxxx?xxx");
-
-		if (pList) {
-			__try {
-				PNDIS_FILTER_BLOCK filter = *(PNDIS_FILTER_BLOCK*)(pList + 7 + *(PINT)(pList + 3));
-				DWORD count = 0;
-
-				while (filter) {
-					PVOID miniport = *(PVOID*)((PBYTE)filter + g_NdisOffsets.FilterToMiniport);
-
-					if (miniport && MmIsAddressValid(miniport)) {
-						PNDIS_IF_BLOCK block = *(PNDIS_IF_BLOCK*)((PBYTE)miniport + g_NdisOffsets.MiniportToIfBlock);
-
-						if (block && MmIsAddressValid(block)) {
-							// Randomize Current MAC
-							for (ULONG i = 0; i < 6; i++) {
-								block->ifPhysAddress.Address[i] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
-							}
-
-							// Randomize PERMANENT Hardware MAC
-							for (ULONG i = 0; i < 6; i++) {
-								block->PermanentPhysAddress.Address[i] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
-							}
-							count++;
-						}
-					}
-					filter = filter->NextFilter;
-				}
-				DbgPrint("[hwid] Permanent MAC spoofed for %d interfaces.\n", count);
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER) {
-				DbgPrint("[hwid] Failed to walk NDIS filter list (Protected).\n");
-			}
-		}
-	}
+                while (filter) {
+                    PVOID miniport = *(PVOID*)((PBYTE)filter + g_NdisOffsets.FilterToMiniport);
+                    if (miniport && MmIsAddressValid(miniport)) {
+                        PNDIS_IF_BLOCK block = *(PNDIS_IF_BLOCK*)((PBYTE)miniport + g_NdisOffsets.MiniportToIfBlock);
+                        if (block && MmIsAddressValid(block)) {
+                            for (ULONG j = 0; j < 6; j++)
+                                block->ifPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
+                            for (ULONG j = 0; j < 6; j++)
+                                block->PermanentPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
+                            count++;
+                        }
+                    }
+                    filter = filter->NextFilter;
+                }
+                DbgPrint("[hwid] Permanent MAC spoofed for %d interfaces\n", count);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                DbgPrint("[hwid] Failed to walk NDIS filter list\n");
+            }
+        }
+    }
 }
 
 //ARP
