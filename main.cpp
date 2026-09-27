@@ -86,14 +86,10 @@ NTSTATUS StorageQueryIoc(PDEVICE_OBJECT device, PIRP irp, PVOID context) {
 			PSTORAGE_DEVICE_DESCRIPTOR desc = (PSTORAGE_DEVICE_DESCRIPTOR)request.Buffer;
 			ULONG offset = desc->SerialNumberOffset;
 			if (offset && offset < request.BufferLength) {
-				SIZE_T remaining = request.BufferLength - offset;
-				SIZE_T serialLen = strlen(SERIAL);
-				SIZE_T copyLen = min(serialLen, remaining - 1); // -1 for null terminator
-
-				RtlCopyMemory((PCHAR)desc + offset, SERIAL, copyLen);
-				*((PCHAR)desc + offset + copyLen) = '\0'; // explicit null terminate
-
-				DbgPrint("handled StorageQueryIoc\n");
+			    SIZE_T remaining = request.BufferLength - offset;
+			    SIZE_T copyLen = min(strlen(SERIAL), remaining - 1);
+			    RtlCopyMemory((PCHAR)desc + offset, SERIAL, copyLen);
+			    *((PCHAR)desc + offset + copyLen) = '\0';
 			}
 		}
 
@@ -194,7 +190,11 @@ void SpoofRaidUnits(RU_REGISTER_INTERFACES RaidUnitRegisterInterfaces, BYTE Raid
 								for (PDEVICE_OBJECT device = raidport_object->DriverObject->DeviceObject; device; device = device->NextDevice) {
 									if (FILE_DEVICE_DISK == device->DeviceType) {
 										PSTRING serial = (PSTRING)((PBYTE)device->DeviceExtension + RaidUnitExtension_SerialNumber_offset);
-										strcpy(serial->Buffer, SERIAL);
+										if (serial->Buffer && serial->MaximumLength > (USHORT)strlen(SERIAL)) {
+											RtlStringCchCopyA(serial->Buffer, serial->MaximumLength, SERIAL);
+											serial->Length = (USHORT)strlen(SERIAL);
+										}
+										
 										serial->Length = (USHORT)strlen(SERIAL);
 
 										if (NT_SUCCESS(status = RaidUnitRegisterInterfaces(device->DeviceExtension))) {
@@ -284,7 +284,13 @@ void SpoofDisks() {
 
 						PFUNCTIONAL_DEVICE_EXTENSION ext = device->DeviceExtension;
 						if (ext) {
-							strcpy((PCHAR)ext->DeviceDescriptor + ext->DeviceDescriptor->SerialNumberOffset, SERIAL);
+							ULONG offset = ext->DeviceDescriptor->SerialNumberOffset;
+						    ULONG size = ext->DeviceDescriptor->Size;
+						    if (offset && offset < size) {
+						        SIZE_T remaining = size - offset;
+						        if (remaining > strlen(SERIAL) + 1)
+						            RtlStringCchCopyA((PCHAR)ext->DeviceDescriptor + offset, remaining, SERIAL);
+						    }
 
 							// Disables SMART
 							if (NT_SUCCESS(status = DiskEnableDisableFailurePrediction(ext, FALSE))) {
@@ -380,40 +386,6 @@ NTSTATUS HookedQueryVolumeInformation(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 		}
 	}
 	return status;
-}
-
-// Initialization Function (Matching your SetDiskWpp style)
-NTSTATUS SetNtfsWpp() {
-	UNICODE_STRING ntfsStr = RTL_CONSTANT_STRING(L"\\FileSystem\\Ntfs");
-	PDRIVER_OBJECT ntfsObject = 0;
-
-	NTSTATUS status = ObReferenceObjectByName(&ntfsStr, OBJ_CASE_INSENSITIVE, 0, 0, *IoDriverObjectType, KernelMode, 0, &ntfsObject);
-	if (!NT_SUCCESS(status)) {
-		DbgPrint("[hwid] ! failed to get %wZ driver object: %x !\n", &ntfsStr, status);
-		return status;
-	}
-
-	OriginalQueryVolumeInformation = (PDRIVER_DISPATCH)InterlockedExchangePointer(
-		(PVOID*)&ntfsObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION],
-		(PVOID)HookedQueryVolumeInformation
-	);
-
-	DbgPrint("[hwid] success for %wZ\n", &ntfsStr);
-	ObDereferenceObject(ntfsObject);
-	return STATUS_SUCCESS;
-}
-
-VOID UnloadNtfsWpp(ObReferenceObjectByName_t pObReferenceObjectByName)
-{
-	UNICODE_STRING ntfsStr = RTL_CONSTANT_STRING(L"\\FileSystem\\Ntfs");
-	PDRIVER_OBJECT ntfsObject = NULL;
-
-	NTSTATUS status = pObReferenceObjectByName(&ntfsStr, OBJ_CASE_INSENSITIVE, NULL, 0, *IoDriverObjectType, KernelMode, NULL, (PVOID*)&ntfsObject);
-	if (NT_SUCCESS(status))
-	{
-		InterlockedExchangePointer((PVOID*)&ntfsObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION], (PVOID)OriginalQueryVolumeInformation);
-		ObDereferenceObject(ntfsObject);
-	}
 }
 
 //USB Spoofing
@@ -889,94 +861,6 @@ void SpoofNIC() {
 	}
 }
 
-/*
-void SpoofNIC() {
-	// 1. NSI proxy hook — covers ARP regardless of adapter type
-	SwapControl(RTL_CONSTANT_STRING(L"\\Driver\\nsiproxy"), NsiControl, NsiControlOriginal);
-
-	// 2. Hook all known NIC drivers dynamically
-	const wchar_t* nicDrivers[] = {
-		L"\\Driver\\rt640x64",      // Realtek PCIe
-		L"\\Driver\\e1d68x64",      // Intel PCIe
-		L"\\Driver\\e1i68x64",      // Intel I219-V
-		L"\\Driver\\netrtwlanu",    // TP-Link Nano USB / Realtek USB wireless
-		L"\\Driver\\rtwlanu",       // Realtek USB wireless alternate
-		L"\\Driver\\nwifi",         // Windows native WiFi wrapper
-		L"\\Driver\\netr28ux",      // Ralink/MediaTek USB
-		L"\\Driver\\mt7921u",       // MediaTek AX
-		L"\\Driver\\bcmwl664",      // Broadcom
-		L"\\Driver\\netwtw"         // Intel WiFi
-	};
-
-	for (int i = 0; i < ARRAYSIZE(nicDrivers); i++) {
-		if (NICs.Length >= MAX_NIC_DRIVERS) break;
-
-		UNICODE_STRING driverName;
-		RtlInitUnicodeString(&driverName, nicDrivers[i]);
-
-		PDRIVER_OBJECT drvObj = NULL;
-		NTSTATUS status = ObReferenceObjectByName(
-			&driverName, OBJ_CASE_INSENSITIVE, NULL, 0,
-			*IoDriverObjectType, KernelMode, NULL, (PVOID*)&drvObj
-		);
-
-		if (NT_SUCCESS(status) && drvObj) {
-			NICs.Drivers[NICs.Length].DriverObject = drvObj;
-			AppendSwap(driverName,
-				&drvObj->MajorFunction[IRP_MJ_DEVICE_CONTROL],
-				NICControl,
-				NICs.Drivers[NICs.Length].Original
-			);
-			NICs.Length++;
-			DbgPrint("[hwid] Hooked NIC: %ws\n", nicDrivers[i]);
-			ObDereferenceObject(drvObj);
-		}
-		// Driver not present — skip silently, don't increment NICs.Length
-	}
-
-	// 3. NDIS version offsets
-	if (!InitializeNdisOffsets()) {
-		DbgPrint("[hwid] Unsupported Windows version for NDIS walk\n");
-		return;
-	}
-
-	// 4. NDIS structural walk — randomize permanent MAC in ndis.sys
-	PVOID ndisBase = GetBaseAddress("ndis.sys", 0);
-	if (ndisBase) {
-		PBYTE pList = FindPatternImage(ndisBase,
-			"\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x48\x8B\x40",
-			"xxx????xxxx?xxx");
-
-		if (pList) {
-			__try {
-				PNDIS_FILTER_BLOCK filter = *(PNDIS_FILTER_BLOCK*)(pList + 7 + *(PINT)(pList + 3));
-				DWORD count = 0;
-
-				while (filter) {
-					PVOID miniport = *(PVOID*)((PBYTE)filter + g_NdisOffsets.FilterToMiniport);
-
-					if (miniport && MmIsAddressValid(miniport)) {
-						PNDIS_IF_BLOCK block = *(PNDIS_IF_BLOCK*)((PBYTE)miniport + g_NdisOffsets.MiniportToIfBlock);
-
-						if (block && MmIsAddressValid(block)) {
-							for (ULONG j = 0; j < 6; j++)
-								block->ifPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
-							for (ULONG j = 0; j < 6; j++)
-								block->PermanentPhysAddress.Address[j] = (BYTE)(RtlRandomEx(&SEED) % 0xFF);
-							count++;
-						}
-					}
-					filter = filter->NextFilter;
-				}
-				DbgPrint("[hwid] Permanent MAC spoofed for %d interfaces\n", count);
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER) {
-				DbgPrint("[hwid] Failed to walk NDIS filter list\n");
-			}
-		}
-	}
-}
-*/
 //ARP
 NTSTATUS InitializeTcpipOffsets() {
 	RTL_OSVERSIONINFOW osInfo = { 0 };
@@ -1711,7 +1595,6 @@ NTSTATUS DriverEntry() {
 	DbgPrint("[hwid] ++ loading (serial: %s)\n", SERIAL);
 
 	SpoofDisks();
-	SetNtfsWpp();
 	SpoofNIC();
 	SpoofARP();
 	SpoofSMBIOS();
